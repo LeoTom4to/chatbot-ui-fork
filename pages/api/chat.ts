@@ -1,60 +1,75 @@
-import { ChatBody, Message } from '@/types/chat';
-import { DEFAULT_SYSTEM_PROMPT } from '@/utils/app/const';
-import { OpenAIError, OpenAIStream } from '@/utils/server';
-import tiktokenModel from '@dqbd/tiktoken/encoders/cl100k_base.json';
-import { init, Tiktoken } from '@dqbd/tiktoken/lite/init';
-// @ts-expect-error
-import wasm from '../../node_modules/@dqbd/tiktoken/lite/tiktoken_bg.wasm?module';
+import { NextApiRequest, NextApiResponse } from 'next';
+import jwt from 'jsonwebtoken';
 
-export const config = {
-  runtime: 'edge',
-};
+export const config = { runtime: 'nodejs' };
 
-const handler = async (req: Request): Promise<Response> => {
-  try {
-    const { model, messages, key, prompt } = (await req.json()) as ChatBody;
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  if (req.method !== 'POST') return res.status(405).end();
+  const { model = 'jiutian-lan', messages = [], prompt = '' } = req.body;
 
-    await init((imports) => WebAssembly.instantiate(wasm, imports));
-    const encoding = new Tiktoken(
-      tiktokenModel.bpe_ranks,
-      tiktokenModel.special_tokens,
-      tiktokenModel.pat_str,
-    );
+  const API_KEY = process.env.JIUTIAN_API_KEY;
+  const APP_ID = process.env.JIUTIAN_APP_ID;
+  if (!API_KEY || !APP_ID) {
+    return res.status(400).json({ error: '缺少 appId 或 apiKey' });
+  }
 
-    let promptToSend = prompt;
-    if (!promptToSend) {
-      promptToSend = DEFAULT_SYSTEM_PROMPT;
-    }
+  // 生成 JWT
+  const [kid, secret] = API_KEY.split('.');
+  const now = Math.floor(Date.now() / 1000);
+  const payload = {
+    api_key: kid,
+    exp: now + 3600,
+    timestamp: now,
+    sign_type: 'SIGN',
+  };
+  const jwtToken = jwt.sign(payload, secret, { algorithm: 'HS256', header: { alg: 'HS256', typ: 'JWT' } });
 
-    const prompt_tokens = encoding.encode(promptToSend);
+  const upstream = await fetch('https://jiutian.10086.cn/largemodel/api/v2/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${jwtToken}`,
+    },
+    body: JSON.stringify({
+      model,
+      messages,
+      stream: true,
+      temperature: 0.7,
+      top_p: 0.9,
+      appId: APP_ID,
+    }),
+  });
 
-    let tokenCount = prompt_tokens.length;
-    let messagesToSend: Message[] = [];
+  if (!upstream.body) return res.status(500).end();
 
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const message = messages[i];
-      const tokens = encoding.encode(message.content);
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
 
-      if (tokenCount + tokens.length + 1000 > model.tokenLimit) {
-        break;
+  const reader = upstream.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let isDone = false;
+
+  while (!isDone) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const text = decoder.decode(value, { stream: true });
+    const lines = text.split('\n');
+    for (const line of lines) {
+      if (line.startsWith('data:')) {
+        res.write(line + '\n');
+        try {
+          const json = JSON.parse(line.replace('data:', '').trim());
+          const delta = json?.choices?.[0]?.delta;
+          if (delta?.status === 'finish') {
+            isDone = true;
+            res.end();
+            break;
+          }
+        } catch {
+          // skip invalid line
+        }
       }
-      tokenCount += tokens.length;
-      messagesToSend = [message, ...messagesToSend];
-    }
-
-    encoding.free();
-
-    const stream = await OpenAIStream(model, promptToSend, key, messagesToSend);
-
-    return new Response(stream);
-  } catch (error) {
-    console.error(error);
-    if (error instanceof OpenAIError) {
-      return new Response('Error', { status: 500, statusText: error.message });
-    } else {
-      return new Response('Error', { status: 500 });
     }
   }
-};
-
-export default handler;
+}

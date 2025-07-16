@@ -147,58 +147,61 @@ const Home: React.FC<HomeProps> = ({
       setLoading(false);
 
       const reader = data.getReader();
-      const decoder = new TextDecoder();
+      const decoder = new TextDecoder('utf-8');
       let done = false;
-      let isFirst = true;
-      let text = '';
 
-      while (!done) {
+      while (!done && reader) {
         if (stopConversationRef.current === true) {
           controller.abort();
           done = true;
           break;
         }
+
         const { value, done: doneReading } = await reader.read();
         done = doneReading;
         const chunkValue = decoder.decode(value);
+        const lines = chunkValue.split('\n').filter(line => line.startsWith('data:'));
 
-        text += chunkValue;
+        for (const line of lines) {
+          const jsonStr = line.replace('data:', '').trim();
+          if (!jsonStr) continue;
+          try {
+            const parsed = JSON.parse(jsonStr);
+            const delta = parsed?.choices?.[0]?.delta;
 
-        if (isFirst) {
-          isFirst = false;
-          const updatedMessages: Message[] = [
-            ...updatedConversation.messages,
-            { role: 'assistant', content: chunkValue },
-          ];
+            if (delta?.status === 'finish') {
+              controller.abort(); // 强制关闭
+              setMessageIsStreaming(false);
+              done = true;
+              break;
+            }
 
-          updatedConversation = {
-            ...updatedConversation,
-            messages: updatedMessages,
-          };
-
-          setSelectedConversation(updatedConversation);
-        } else {
-          const updatedMessages: Message[] = updatedConversation.messages.map(
-            (message, index) => {
-              if (index === updatedConversation.messages.length - 1) {
-                return {
-                  ...message,
-                  content: text,
-                };
-              }
-
-              return message;
-            },
-          );
-
-          updatedConversation = {
-            ...updatedConversation,
-            messages: updatedMessages,
-          };
-
-          setSelectedConversation(updatedConversation);
+            const content = delta?.content || delta?.text;
+            if (content) {
+              // 你已有的拼接内容逻辑
+              const updatedMessages: Message[] = updatedConversation.messages.map(
+                (message, index) => {
+                  if (index === updatedConversation.messages.length - 1) {
+                    return {
+                      ...message,
+                      content: (message.content || '') + content,
+                    };
+                  }
+                  return message;
+                },
+              );
+              updatedConversation = {
+                ...updatedConversation,
+                messages: updatedMessages,
+              };
+              setSelectedConversation(updatedConversation);
+            }
+          } catch (err) {
+            // 忽略非 JSON
+          }
         }
       }
+      setMessageIsStreaming(false); // 最终兜底
 
       saveConversation(updatedConversation);
 
@@ -219,8 +222,6 @@ const Home: React.FC<HomeProps> = ({
       setConversations(updatedConversations);
 
       saveConversations(updatedConversations);
-
-      setMessageIsStreaming(false);
     }
   };
 
@@ -267,7 +268,12 @@ const Home: React.FC<HomeProps> = ({
       return;
     }
 
-    setModels(data);
+    setModels((data.data as any[]).map((x: any) => ({
+      id: x.id,
+      name: '九天大模型',
+      maxLength: 12000,
+      tokenLimit: 3000,
+    })));
     setModelError(null);
   };
 
