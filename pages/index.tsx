@@ -8,12 +8,14 @@ import { ErrorMessage } from '@/types/error';
 import { LatestExportFormat, SupportedExportFormats } from '@/types/export';
 import { Folder, FolderType } from '@/types/folder';
 import {
-  fallbackModelID,
   OpenAIModel,
   OpenAIModelID,
   OpenAIModels,
+  fallbackModelID,
 } from '@/types/openai';
+import { Plugin, PluginKey } from '@/types/plugin';
 import { Prompt } from '@/types/prompt';
+import { getEndpoint } from '@/utils/app/api';
 import {
   cleanConversationHistory,
   cleanSelectedConversation,
@@ -33,30 +35,40 @@ import { useTranslation } from 'next-i18next';
 import { serverSideTranslations } from 'next-i18next/serverSideTranslations';
 import Head from 'next/head';
 import { useEffect, useRef, useState } from 'react';
-import { v4 as uuidv4 } from 'uuid';
 import toast from 'react-hot-toast';
+import { v4 as uuidv4 } from 'uuid';
+import { useRiskAnalysisStore } from '@/store/useRiskAnalysisStore';
+import { RiskAnalysisReport } from '@/components/RiskAnalysisReport';
+import { useRiskStore } from '@/store/useRiskStore';
 
 interface HomeProps {
   serverSideApiKeyIsSet: boolean;
+  serverSidePluginKeysSet: boolean;
   defaultModelId: OpenAIModelID;
 }
 
 const Home: React.FC<HomeProps> = ({
   serverSideApiKeyIsSet,
+  serverSidePluginKeysSet,
   defaultModelId,
 }) => {
   const { t } = useTranslation('chat');
+  const { switchChat } = useRiskStore();
 
   // STATE ----------------------------------------------
 
   const [apiKey, setApiKey] = useState<string>('');
+  const [pluginKeys, setPluginKeys] = useState<PluginKey[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
-  const [lightMode, setLightMode] = useState<'dark' | 'light'>('dark');
   const [messageIsStreaming, setMessageIsStreaming] = useState<boolean>(false);
 
-  const [modelError, setModelError] = useState<ErrorMessage | null>(null);
-
-  const [models, setModels] = useState<OpenAIModel[]>([]);
+  // 1. 固定 model 字段
+  const FIXED_MODEL = {
+    id: 'jiutian',
+    name: '九天大模型',
+    maxLength: 12000,
+    tokenLimit: 3000,
+  };
 
   const [folders, setFolders] = useState<Folder[]>([]);
 
@@ -76,7 +88,11 @@ const Home: React.FC<HomeProps> = ({
 
   // FETCH RESPONSE ----------------------------------------------
 
-  const handleSend = async (message: Message, deleteCount = 0) => {
+  const handleSend = async (
+    message: Message,
+    deleteCount = 0,
+    plugin: Plugin | null = null,
+  ) => {
     if (selectedConversation) {
       let updatedConversation: Conversation;
 
@@ -101,192 +117,122 @@ const Home: React.FC<HomeProps> = ({
       setLoading(true);
       setMessageIsStreaming(true);
 
-      const chatBody: ChatBody = {
-        model: updatedConversation.model,
-        messages: updatedConversation.messages,
-        key: apiKey,
-        prompt: updatedConversation.prompt,
-      };
-
-      const controller = new AbortController();
-      const response = await fetch('/api/chat', {
+      // 1. 只请求聊天接口，主对话区只显示 output 纯文本
+      const historyArr = updatedConversation.messages.map(m => [m.role, m.content]);
+      // 聊天流和结构化判断流并行
+      const chatPromise = fetch('/api/jiutian/chat', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        signal: controller.signal,
-        body: JSON.stringify(chatBody),
-      });
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ input: message.content, history: historyArr }),
+      }).then(res => res.json());
 
-      if (!response.ok) {
-        setLoading(false);
-        setMessageIsStreaming(false);
-        toast.error(response.statusText);
-        return;
-      }
+      const judgePromise = fetch('/api/jiutian/structured-judgment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: message.content }),
+      }).then(res => res.json());
 
-      const data = response.body;
+      // 新增：多状态流适配
+      const setAllResult = useRiskAnalysisStore.getState().setAllResult;
+      const setStatus = useRiskAnalysisStore.getState().setStatus;
+      setStatus('judge_loading');
+      const [{ output: chatText }, { fraud_judgment }] = await Promise.all([chatPromise, judgePromise]);
 
-      if (!data) {
-        setLoading(false);
-        setMessageIsStreaming(false);
-        return;
-      }
-
-      if (updatedConversation.messages.length === 1) {
-        const { content } = message;
-        const customName =
-          content.length > 30 ? content.substring(0, 30) + '...' : content;
-
-        updatedConversation = {
-          ...updatedConversation,
-          name: customName,
-        };
-      }
-
+      // 先展示 assistant 消息
+            const updatedMessages2: Message[] = [
+              ...updatedConversation.messages,
+        { role: 'assistant', content: chatText },
+      ];
+                updatedConversation = {
+                  ...updatedConversation,
+                  messages: updatedMessages2,
+                };
+                setSelectedConversation(updatedConversation);
+        saveConversation(updatedConversation);
+        const updatedConversations: Conversation[] = conversations.map(
+          (conversation) => {
+            if (conversation.id === selectedConversation.id) {
+              return updatedConversation;
+            }
+            return conversation;
+          },
+        );
+        if (updatedConversations.length === 0) {
+          updatedConversations.push(updatedConversation);
+        }
+        setConversations(updatedConversations);
+        saveConversations(updatedConversations);
       setLoading(false);
+      setMessageIsStreaming(false);
+      setAllResult({ fraud_judgment });
 
-      const reader = data.getReader();
-      const decoder = new TextDecoder('utf-8');
-      let done = false;
-
-      while (!done && reader) {
-        if (stopConversationRef.current === true) {
-          controller.abort();
-          done = true;
-          break;
-        }
-
-        const { value, done: doneReading } = await reader.read();
-        done = doneReading;
-        const chunkValue = decoder.decode(value);
-        const lines = chunkValue.split('\n').filter(line => line.startsWith('data:'));
-
-        for (const line of lines) {
-          const jsonStr = line.replace('data:', '').trim();
-          if (!jsonStr) continue;
-          try {
-            const parsed = JSON.parse(jsonStr);
-            const delta = parsed?.choices?.[0]?.delta;
-
-            if (delta?.status === 'finish') {
-              controller.abort(); // 强制关闭
-              setMessageIsStreaming(false);
-              done = true;
-              break;
-            }
-
-            const content = delta?.content || delta?.text;
-            if (content) {
-              // 你已有的拼接内容逻辑
-              const updatedMessages: Message[] = updatedConversation.messages.map(
-                (message, index) => {
-                  if (index === updatedConversation.messages.length - 1) {
-                    return {
-                      ...message,
-                      content: (message.content || '') + content,
-                    };
-                  }
-                  return message;
-                },
-              );
-              updatedConversation = {
-                ...updatedConversation,
-                messages: updatedMessages,
-              };
-              setSelectedConversation(updatedConversation);
-            }
-          } catch (err) {
-            // 忽略非 JSON
-          }
-        }
-      }
-      setMessageIsStreaming(false); // 最终兜底
-
-      saveConversation(updatedConversation);
-
-      const updatedConversations: Conversation[] = conversations.map(
-        (conversation) => {
-          if (conversation.id === selectedConversation.id) {
-            return updatedConversation;
-          }
-
-          return conversation;
-        },
-      );
-
-      if (updatedConversations.length === 0) {
-        updatedConversations.push(updatedConversation);
-      }
-
-      setConversations(updatedConversations);
-
-      saveConversations(updatedConversations);
-    }
-  };
-
-  // FETCH MODELS ----------------------------------------------
-
-  const fetchModels = async (key: string) => {
-    const error = {
-      title: t('Error fetching models.'),
-      code: null,
-      messageLines: [
-        t(
-          'Make sure your OpenAI API key is set in the bottom left of the sidebar.',
-        ),
-        t('If you completed this step, OpenAI may be experiencing issues.'),
-      ],
-    } as ErrorMessage;
-
-    const response = await fetch('/api/models', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        key,
-      }),
-    });
-
-    if (!response.ok) {
-      try {
-        const data = await response.json();
-        Object.assign(error, {
-          code: data.error?.code,
-          messageLines: [data.error?.message],
+      // 仅诈骗时请求 chatflow
+      if (fraud_judgment?.is_scam) {
+        setStatus('analysis_loading');
+        const analysis = await fetch('/api/jiutian/chatflow', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+            fraud_type: fraud_judgment.fraud_type,
+            risk_level: fraud_judgment.risk_level,
+                }),
+        }).then(res => res.json());
+        setAllResult({
+          ...analysis,
+          fraud_judgment, // 保证合并
         });
-      } catch (e) {}
-      setModelError(error);
-      return;
+        setStatus('scam_ready');
+      } else {
+        setStatus('safe');
+        setAllResult({ fraud_judgment }); // 非诈骗也带上
+      }
     }
-
-    const data = await response.json();
-
-    if (!data) {
-      setModelError(error);
-      return;
-    }
-
-    setModels((data.data as any[]).map((x: any) => ({
-      id: x.id,
-      name: '九天大模型',
-      maxLength: 12000,
-      tokenLimit: 3000,
-    })));
-    setModelError(null);
   };
 
   // BASIC HANDLERS --------------------------------------------
 
-  const handleLightMode = (mode: 'dark' | 'light') => {
-    setLightMode(mode);
-    localStorage.setItem('theme', mode);
-  };
-
   const handleApiKeyChange = (apiKey: string) => {
     setApiKey(apiKey);
     localStorage.setItem('apiKey', apiKey);
+  };
+
+  const handlePluginKeyChange = (pluginKey: PluginKey) => {
+    if (pluginKeys.some((key) => key.pluginId === pluginKey.pluginId)) {
+      const updatedPluginKeys = pluginKeys.map((key) => {
+        if (key.pluginId === pluginKey.pluginId) {
+          return pluginKey;
+        }
+
+        return key;
+      });
+
+      setPluginKeys(updatedPluginKeys);
+
+      localStorage.setItem('pluginKeys', JSON.stringify(updatedPluginKeys));
+    } else {
+      setPluginKeys([...pluginKeys, pluginKey]);
+
+      localStorage.setItem(
+        'pluginKeys',
+        JSON.stringify([...pluginKeys, pluginKey]),
+      );
+    }
+  };
+
+  const handleClearPluginKey = (pluginKey: PluginKey) => {
+    const updatedPluginKeys = pluginKeys.filter(
+      (key) => key.pluginId !== pluginKey.pluginId,
+    );
+
+    if (updatedPluginKeys.length === 0) {
+      setPluginKeys([]);
+      localStorage.removeItem('pluginKeys');
+      return;
+    }
+
+    setPluginKeys(updatedPluginKeys);
+
+    localStorage.setItem('pluginKeys', JSON.stringify(updatedPluginKeys));
   };
 
   const handleToggleChatbar = () => {
@@ -315,6 +261,7 @@ const Home: React.FC<HomeProps> = ({
   const handleSelectConversation = (conversation: Conversation) => {
     setSelectedConversation(conversation);
     saveConversation(conversation);
+    switchChat(conversation.id); // 👈 集成会话级缓存切换
   };
 
   // FOLDER OPERATIONS  --------------------------------------------
@@ -383,18 +330,15 @@ const Home: React.FC<HomeProps> = ({
   // CONVERSATION OPERATIONS  --------------------------------------------
 
   const handleNewConversation = () => {
-    const lastConversation = conversations[conversations.length - 1];
-
+    const setStatus = useRiskAnalysisStore.getState().setStatus;
+    const setAnalysisResult = useRiskAnalysisStore.getState().setAnalysisResult;
+    setStatus('idle');
+    setAnalysisResult(null);
     const newConversation: Conversation = {
       id: uuidv4(),
-      name: `${t('New Conversation')}`,
+      name: '新建对话',
       messages: [],
-      model: lastConversation?.model || {
-        id: OpenAIModels[defaultModelId].id,
-        name: OpenAIModels[defaultModelId].name,
-        maxLength: OpenAIModels[defaultModelId].maxLength,
-        tokenLimit: OpenAIModels[defaultModelId].tokenLimit,
-      },
+      model: FIXED_MODEL,
       prompt: DEFAULT_SYSTEM_PROMPT,
       folderId: null,
     };
@@ -425,9 +369,9 @@ const Home: React.FC<HomeProps> = ({
     } else {
       setSelectedConversation({
         id: uuidv4(),
-        name: 'New conversation',
+        name: '新建对话',
         messages: [],
-        model: OpenAIModels[defaultModelId],
+        model: FIXED_MODEL,
         prompt: DEFAULT_SYSTEM_PROMPT,
         folderId: null,
       });
@@ -459,9 +403,9 @@ const Home: React.FC<HomeProps> = ({
 
     setSelectedConversation({
       id: uuidv4(),
-      name: 'New conversation',
+      name: '新建对话',
       messages: [],
-      model: OpenAIModels[defaultModelId],
+      model: FIXED_MODEL,
       prompt: DEFAULT_SYSTEM_PROMPT,
       folderId: null,
     });
@@ -502,14 +446,12 @@ const Home: React.FC<HomeProps> = ({
   // PROMPT OPERATIONS --------------------------------------------
 
   const handleCreatePrompt = () => {
-    const lastPrompt = prompts[prompts.length - 1];
-
     const newPrompt: Prompt = {
       id: uuidv4(),
       name: `Prompt ${prompts.length + 1}`,
       description: '',
       content: '',
-      model: OpenAIModels[defaultModelId],
+      model: FIXED_MODEL,
       folderId: null,
     };
 
@@ -554,25 +496,52 @@ const Home: React.FC<HomeProps> = ({
   }, [selectedConversation]);
 
   useEffect(() => {
-    if (apiKey) {
-      fetchModels(apiKey);
+    if (selectedConversation) {
+      switchChat(selectedConversation.id);
     }
-  }, [apiKey]);
+  }, [selectedConversation]);
+
+  // 集成结构化判断监听
+  const setAnalysisResult = useRiskAnalysisStore(s => s.setAnalysisResult);
+  const setRiskLoading = useRiskAnalysisStore(s => s.setLoading);
+  useEffect(() => {
+    if (!selectedConversation || !selectedConversation.messages?.length) return;
+    const lastMessage = selectedConversation.messages[selectedConversation.messages.length - 1];
+    if (lastMessage?.role === 'user') {
+      setRiskLoading(true);
+      fetch('/api/jiutian/chat', {
+        method: 'POST',
+        body: JSON.stringify({ input: lastMessage.content }),
+        headers: { 'Content-Type': 'application/json' },
+      })
+        .then(res => res.json())
+        .then((result) => {
+          setAnalysisResult(result);
+          if (result && result.fraud_judgment) {
+            setSelectedConversation((prev) => prev ? { ...prev, result: result.fraud_judgment } : prev);
+          }
+        })
+        .finally(() => setRiskLoading(false));
+    }
+  }, [selectedConversation?.messages]);
 
   // ON LOAD --------------------------------------------
 
   useEffect(() => {
-    const theme = localStorage.getItem('theme');
-    if (theme) {
-      setLightMode(theme as 'dark' | 'light');
+    const apiKey = localStorage.getItem('apiKey');
+    if (serverSideApiKeyIsSet) {
+      setApiKey('');
+      localStorage.removeItem('apiKey');
+    } else if (apiKey) {
+      setApiKey(apiKey);
     }
 
-    const apiKey = localStorage.getItem('apiKey');
-    if (apiKey) {
-      setApiKey(apiKey);
-      fetchModels(apiKey);
-    } else if (serverSideApiKeyIsSet) {
-      fetchModels('');
+    const pluginKeys = localStorage.getItem('pluginKeys');
+    if (serverSidePluginKeysSet) {
+      setPluginKeys([]);
+      localStorage.removeItem('pluginKeys');
+    } else if (pluginKeys) {
+      setPluginKeys(JSON.parse(pluginKeys));
     }
 
     if (window.innerWidth < 640) {
@@ -620,29 +589,28 @@ const Home: React.FC<HomeProps> = ({
     } else {
       setSelectedConversation({
         id: uuidv4(),
-        name: 'New conversation',
+        name: '新建对话',
         messages: [],
-        model: OpenAIModels[defaultModelId],
+        model: FIXED_MODEL,
         prompt: DEFAULT_SYSTEM_PROMPT,
         folderId: null,
       });
     }
+    // 强制清理theme字段，避免light残留
+    localStorage.removeItem('theme');
   }, [serverSideApiKeyIsSet]);
 
   return (
     <>
       <Head>
-        <title>Chatbot UI</title>
-        <meta name="description" content="ChatGPT but better." />
-        <meta
-          name="viewport"
-          content="height=device-height ,width=device-width, initial-scale=1, user-scalable=no"
-        />
+        <title>AI 断案：金融诈骗速判所</title>
+        <meta name="description" content="AI 断案：金融诈骗速判所" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
         <link rel="icon" href="/favicon.ico" />
       </Head>
       {selectedConversation && (
         <main
-          className={`flex h-screen w-screen flex-col text-sm text-white dark:text-white ${lightMode}`}
+          className={`flex h-screen w-screen flex-col text-sm text-black dark:text-white`}
         >
           <div className="fixed top-0 w-full sm:hidden">
             <Navbar
@@ -657,30 +625,32 @@ const Home: React.FC<HomeProps> = ({
                 <Chatbar
                   loading={messageIsStreaming}
                   conversations={conversations}
-                  lightMode={lightMode}
                   selectedConversation={selectedConversation}
                   apiKey={apiKey}
+                  serverSideApiKeyIsSet={serverSideApiKeyIsSet}
+                  pluginKeys={pluginKeys}
+                  serverSidePluginKeysSet={serverSidePluginKeysSet}
                   folders={folders.filter((folder) => folder.type === 'chat')}
-                  onToggleLightMode={handleLightMode}
                   onCreateFolder={(name) => handleCreateFolder(name, 'chat')}
                   onDeleteFolder={handleDeleteFolder}
                   onUpdateFolder={handleUpdateFolder}
                   onNewConversation={handleNewConversation}
                   onSelectConversation={handleSelectConversation}
                   onDeleteConversation={handleDeleteConversation}
-                  onToggleSidebar={handleToggleChatbar}
                   onUpdateConversation={handleUpdateConversation}
                   onApiKeyChange={handleApiKeyChange}
                   onClearConversations={handleClearConversations}
                   onExportConversations={handleExportData}
                   onImportConversations={handleImportConversations}
+                  onPluginKeyChange={handlePluginKeyChange}
+                  onClearPluginKey={handleClearPluginKey}
                 />
 
                 <button
                   className="fixed top-5 left-[270px] z-50 h-7 w-7 hover:text-gray-400 dark:text-white dark:hover:text-gray-300 sm:top-0.5 sm:left-[270px] sm:h-8 sm:w-8 sm:text-neutral-700"
                   onClick={handleToggleChatbar}
                 >
-                  <IconArrowBarLeft />
+                  <IconArrowBarLeft color="#fff" />
                 </button>
                 <div
                   onClick={handleToggleChatbar}
@@ -692,19 +662,16 @@ const Home: React.FC<HomeProps> = ({
                 className="fixed top-2.5 left-4 z-50 h-7 w-7 text-white hover:text-gray-400 dark:text-white dark:hover:text-gray-300 sm:top-0.5 sm:left-4 sm:h-8 sm:w-8 sm:text-neutral-700"
                 onClick={handleToggleChatbar}
               >
-                <IconArrowBarRight />
+                <IconArrowBarRight color="#fff" />
               </button>
             )}
 
-            <div className="flex flex-1">
+            <div className="flex flex-1" style={{ marginLeft: '-40px' }}>
               <Chat
                 conversation={selectedConversation}
                 messageIsStreaming={messageIsStreaming}
                 apiKey={apiKey}
                 serverSideApiKeyIsSet={serverSideApiKeyIsSet}
-                defaultModelId={defaultModelId}
-                modelError={modelError}
-                models={models}
                 loading={loading}
                 prompts={prompts}
                 onSend={handleSend}
@@ -712,26 +679,20 @@ const Home: React.FC<HomeProps> = ({
                 onEditMessage={handleEditMessage}
                 stopConversationRef={stopConversationRef}
               />
+              {/* 自动集成分析报告组件：仅在有判定结果时显示 */}
+              {selectedConversation?.result && selectedConversation.result.fraud_type && selectedConversation.result.risk_level && (
+                <RiskAnalysisReport fraud_judgment={selectedConversation.result} />
+              )}
             </div>
 
             {showPromptbar ? (
               <div>
-                <Promptbar
-                  prompts={prompts}
-                  folders={folders.filter((folder) => folder.type === 'prompt')}
-                  onToggleSidebar={handleTogglePromptbar}
-                  onCreatePrompt={handleCreatePrompt}
-                  onUpdatePrompt={handleUpdatePrompt}
-                  onDeletePrompt={handleDeletePrompt}
-                  onCreateFolder={(name) => handleCreateFolder(name, 'prompt')}
-                  onDeleteFolder={handleDeleteFolder}
-                  onUpdateFolder={handleUpdateFolder}
-                />
+                <Promptbar />
                 <button
-                  className="fixed top-5 right-[270px] z-50 h-7 w-7 hover:text-gray-400 dark:text-white dark:hover:text-gray-300 sm:top-0.5 sm:right-[270px] sm:h-8 sm:w-8 sm:text-neutral-700"
+                  className="fixed top-5 right-[310px] z-50 h-7 w-7 flex items-center justify-center text-black hover:text-gray-400 sm:top-0.5 sm:right-[330px] sm:h-8 sm:w-8"
                   onClick={handleTogglePromptbar}
                 >
-                  <IconArrowBarRight />
+                  <IconArrowBarRight size={18} color="#fff" />
                 </button>
                 <div
                   onClick={handleTogglePromptbar}
@@ -743,7 +704,7 @@ const Home: React.FC<HomeProps> = ({
                 className="fixed top-2.5 right-4 z-50 h-7 w-7 text-white hover:text-gray-400 dark:text-white dark:hover:text-gray-300 sm:top-0.5 sm:right-4 sm:h-8 sm:w-8 sm:text-neutral-700"
                 onClick={handleTogglePromptbar}
               >
-                <IconArrowBarLeft />
+                <IconArrowBarLeft color="#fff" />
               </button>
             )}
           </div>
@@ -763,10 +724,20 @@ export const getServerSideProps: GetServerSideProps = async ({ locale }) => {
       process.env.DEFAULT_MODEL) ||
     fallbackModelID;
 
+  let serverSidePluginKeysSet = false;
+
+  const googleApiKey = process.env.GOOGLE_API_KEY;
+  const googleCSEId = process.env.GOOGLE_CSE_ID;
+
+  if (googleApiKey && googleCSEId) {
+    serverSidePluginKeysSet = true;
+  }
+
   return {
     props: {
       serverSideApiKeyIsSet: !!process.env.OPENAI_API_KEY,
       defaultModelId,
+      serverSidePluginKeysSet,
       ...(await serverSideTranslations(locale ?? 'en', [
         'common',
         'chat',

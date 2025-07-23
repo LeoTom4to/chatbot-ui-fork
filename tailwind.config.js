@@ -7,7 +7,17 @@ module.exports = {
   ],
   darkMode: 'class',
   theme: {
-    extend: {},
+    extend: {
+      keyframes: {
+        pulseGlow: {
+          '0%,100%': { boxShadow: '0 0 8px 0 #34d39966' },
+          '50%':      { boxShadow: '0 0 16px 3px #34d399aa' },
+        },
+      },
+      animation: {
+        glow: 'pulseGlow 4s ease-in-out infinite',
+      },
+    },
   },
   variants: {
     extend: {

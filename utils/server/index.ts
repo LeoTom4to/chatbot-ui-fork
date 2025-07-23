@@ -43,7 +43,14 @@ export const OpenAIStream = async (
   const res = await fetch('https://jiutian.10086.cn/largemodel/api/v2/completions', {
     headers: {
       'Content-Type': 'application/json',
+<<<<<<< HEAD
       'Authorization': `Bearer ${jwtToken}`,
+=======
+      Authorization: `Bearer ${key ? key : process.env.OPENAI_API_KEY}`,
+      ...(process.env.OPENAI_ORGANIZATION && {
+        'OpenAI-Organization': process.env.OPENAI_ORGANIZATION,
+      }),
+>>>>>>> 68c9cd4bd803bdb186c4ee6514f00239549a26a3
     },
     method: 'POST',
     body: JSON.stringify({

@@ -8,7 +8,7 @@ export interface Message {
 export type Role = 'assistant' | 'user';
 
 export interface ChatBody {
-  model: OpenAIModel;
+  model: { id: string };
   messages: Message[];
   key: string;
   prompt: string;
@@ -21,4 +21,5 @@ export interface Conversation {
   model: OpenAIModel;
   prompt: string;
   folderId: string | null;
+  result?: any; // 结构化判定结果
 }
