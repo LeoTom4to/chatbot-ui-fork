@@ -46,7 +46,7 @@ export const ChatFooter = () => {
       }
       if (current.result) {
         content += '\n【分析结果】\n';
-        content += `风险等级：${current.result.risk}\n标签：${current.result.tags?.join('、') || '-'}\n建议：${current.result.advice || '-'}\n`;
+        content += `风险等级：${current.result.risk_level}\n标签：${(current.result.risk_tags || []).join('、') || '-'}\n依据：${current.result.reasoning || '-'}`;
       }
       if (!content) {
         alert('暂无可导出的内容');
@@ -72,15 +72,14 @@ export const ChatFooter = () => {
     setLoading(true);
     setAiLoading(true);
     try {
-      const res = await fetch('/api/analyze?type=' + type, {
+      const res = await fetch('/api/jiutian/chat?type=' + type, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, mode: current.mode })
+        body: JSON.stringify({ input: text })
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || '分析失败');
-      // 以 assistant 消息形式插入结果
-      const assistantMsg = { id: crypto.randomUUID(), role: 'assistant' as const, content: data.text || '无结果' };
+      const { fraud_judgment } = await res.json();
+      if (!res.ok) throw new Error('分析失败');
+      const assistantMsg = { id: crypto.randomUUID(), role: 'assistant' as const, content: fraud_judgment?.reasoning || '无结果' };
       const latest = useCaseStore.getState().cases.find((c) => c.id === current.id);
       patch({ messages: [...(latest?.messages || []), assistantMsg] });
       setShowTools(false);
@@ -100,28 +99,18 @@ export const ChatFooter = () => {
     const latestCurrent = useCaseStore.getState().cases.find((c) => c.id === current.id);
     patch({ messages: [...(latestCurrent?.messages || []), userMsg] });
     try {
-      let body: any = { text, mode: current.mode };
-      if (current.mode === 'multi') {
-        body.messages = [...(latestCurrent?.messages || []), userMsg].map(({ id, ...rest }) => rest); // 去除 id 仅传 role/content
-      }
-      const res = await fetch('/api/analyze', {
+      const res = await fetch('/api/jiutian/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
+        body: JSON.stringify({ input: text })
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || '分析失败');
-      if (current.mode === 'multi') {
-        const latest = useCaseStore.getState().cases.find((c) => c.id === current.id);
-        const assistantMsg = { id: crypto.randomUUID(), role: 'assistant' as const, content: data.text };
-        patch({ messages: [...(latest?.messages || []), assistantMsg] });
-      } else {
+      const { fraud_judgment } = await res.json();
+      if (!res.ok) throw new Error('分析失败');
         patch({
-          messages: [...(latestCurrent?.messages || []), userMsg],
-          result: data,
+        messages: [...(latestCurrent?.messages || []), userMsg, { id: crypto.randomUUID(), role: 'assistant', content: fraud_judgment?.reasoning || '无结果' }],
+        result: fraud_judgment,
           locked: true,
         });
-      }
       setText('');
       setTimeout(() => {
         textareaRef.current?.focus();

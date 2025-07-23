@@ -1,179 +1,70 @@
-import { Folder } from '@/types/folder';
-import { Prompt } from '@/types/prompt';
-import {
-  IconArrowBarRight,
-  IconFolderPlus,
-  IconMistOff,
-  IconPlus,
-} from '@tabler/icons-react';
-import { FC, useEffect, useState } from 'react';
-import { useTranslation } from 'react-i18next';
-import { PromptFolders } from '../Folders/Prompt/PromptFolders';
-import { Search } from '../Sidebar/Search';
-import { PromptbarSettings } from './PromptbarSettings';
-import { Prompts } from './Prompts';
+import React, { useRef, useEffect, useState } from 'react';
+import { useRiskAnalysisStore } from '@/store/useRiskAnalysisStore';
+import { SafeCardPanel } from './modules/SafeCardPanel';
+import { RiskCardPanel } from './modules/RiskCardPanel';
+import { KeywordRadar } from './modules/KeywordRadar';
+import { RiskStatsPanel } from './modules/RiskStatsPanel';
+import { RiskTrendPanel } from './modules/RiskTrendPanel';
+import { FraudTipsPanel } from './modules/FraudTipsPanel';
+import { AuthorityLinksPanel } from './modules/AuthorityLinksPanel';
+import { SAFE_FALLBACK } from '@/ui/constants/safeFallback';
 
-interface Props {
-  prompts: Prompt[];
-  folders: Folder[];
-  onCreateFolder: (name: string) => void;
-  onDeleteFolder: (folderId: string) => void;
-  onUpdateFolder: (folderId: string, name: string) => void;
-  onToggleSidebar: () => void;
-  onCreatePrompt: () => void;
-  onUpdatePrompt: (prompt: Prompt) => void;
-  onDeletePrompt: (prompt: Prompt) => void;
-}
+// 六件套模块
+const SixPieces: React.FC<{ data: any }> = ({ data }) => (
+  <>
+    <RiskCardPanel result={data} />
+    <KeywordRadar result={data} />
+    <RiskStatsPanel result={data} />
+    <RiskTrendPanel result={data} />
+    <FraudTipsPanel result={data} />
+    <AuthorityLinksPanel result={data} />
+  </>
+);
 
-export const Promptbar: FC<Props> = ({
-  folders,
-  prompts,
-  onCreateFolder,
-  onDeleteFolder,
-  onUpdateFolder,
-  onCreatePrompt,
-  onUpdatePrompt,
-  onDeletePrompt,
-  onToggleSidebar,
-}) => {
-  const { t } = useTranslation('promptbar');
-  const [searchTerm, setSearchTerm] = useState<string>('');
-  const [filteredPrompts, setFilteredPrompts] = useState<Prompt[]>(prompts);
-
-  const handleUpdatePrompt = (prompt: Prompt) => {
-    onUpdatePrompt(prompt);
-    setSearchTerm('');
-  };
-
-  const handleDeletePrompt = (prompt: Prompt) => {
-    onDeletePrompt(prompt);
-    setSearchTerm('');
-  };
-
-  const handleDrop = (e: any) => {
-    if (e.dataTransfer) {
-      const prompt = JSON.parse(e.dataTransfer.getData('prompt'));
-
-      const updatedPrompt = {
-        ...prompt,
-        folderId: e.target.dataset.folderId,
-      };
-
-      onUpdatePrompt(updatedPrompt);
-
-      e.target.style.background = 'none';
-    }
-  };
-
-  const allowDrop = (e: any) => {
-    e.preventDefault();
-  };
-
-  const highlightDrop = (e: any) => {
-    e.target.style.background = '#343541';
-  };
-
-  const removeHighlight = (e: any) => {
-    e.target.style.background = 'none';
-  };
+export const Promptbar = () => {
+  const status = useRiskAnalysisStore(s => s.status);
+  const analysis = useRiskAnalysisStore(s => s.analysisResult);
+  const [lastChecked, setLastChecked] = useState(() => new Date());
+  const prevStatus = useRef(status);
 
   useEffect(() => {
-    if (searchTerm) {
-      setFilteredPrompts(
-        prompts.filter((prompt) => {
-          const searchable =
-            prompt.name.toLowerCase() +
-            ' ' +
-            prompt.description.toLowerCase() +
-            ' ' +
-            prompt.content.toLowerCase();
-          return searchable.includes(searchTerm.toLowerCase());
-        }),
-      );
-    } else {
-      setFilteredPrompts(prompts);
+    // 仅当从 judge_loading/analysis_loading 切换到 safe 时，更新时间
+    if ((prevStatus.current === 'judge_loading' || prevStatus.current === 'analysis_loading') && status === 'safe') {
+      setLastChecked(new Date());
     }
-  }, [searchTerm, prompts]);
+    prevStatus.current = status;
+  }, [status]);
 
-  return (
-    <div
-      className={`fixed top-0 right-0 z-50 flex h-full w-[260px] flex-none flex-col space-y-2 bg-[#202123] p-2 text-[14px] transition-all sm:relative sm:top-0`}
-    >
-      <div className="flex items-center">
-        <button
-          className="text-sidebar flex w-[190px] flex-shrink-0 cursor-pointer select-none items-center gap-3 rounded-md border border-white/20 p-3 text-white transition-colors duration-200 hover:bg-gray-500/10"
-          onClick={() => {
-            onCreatePrompt();
-            setSearchTerm('');
-          }}
-        >
-          <IconPlus size={16} />
-          {t('New prompt')}
-        </button>
+  if (status === 'idle' || status === 'safe') {
+    return (
+      <aside className="fixed right-0 top-0 h-full w-[320px] bg-[#121212] p-2 overflow-y-auto z-50">
+        <SafeCardPanel lastChecked={lastChecked} />
+      </aside>
+    );
+  }
 
-        <button
-          className="flex items-center flex-shrink-0 gap-3 p-3 ml-2 text-sm text-white transition-colors duration-200 border rounded-md cursor-pointer border-white/20 hover:bg-gray-500/10"
-          onClick={() => onCreateFolder(t('New folder'))}
-        >
-          <IconFolderPlus size={16} />
-        </button>
+  if (status === 'judge_loading' || status === 'analysis_loading') {
+    return (
+      <aside className="fixed right-0 top-0 h-full w-[320px] bg-[#121212] p-2 overflow-y-auto z-50">
+        <progress className="w-full h-[2px] bg-blue-500 mb-2" />
+        <div className="space-y-3 animate-pulse p-4">
+          <div className="h-24 rounded bg-neutral-700/60" />
+          <div className="h-32 rounded bg-neutral-700/60" />
+          <div className="h-20 rounded bg-neutral-700/60" />
+          <div className="mt-4 text-center text-gray-400 text-base font-bold">AI 正在分析，请稍候…</div>
+        </div>
+      </aside>
+    );
+  }
 
-        <IconArrowBarRight
-          className="hidden p-1 ml-1 cursor-pointer text-neutral-300 hover:text-neutral-400 sm:flex"
-          size={32}
-          onClick={onToggleSidebar}
-        />
-      </div>
+  if (status === 'scam_ready' && analysis) {
+    return (
+      <aside className="fixed right-0 top-0 h-full w-[320px] bg-[#121212] p-2 overflow-y-auto z-50">
+        <SixPieces data={analysis} />
+      </aside>
+    );
+  }
 
-      {prompts.length > 1 && (
-        <Search
-          placeholder={t('Search prompts...') || ''}
-          searchTerm={searchTerm}
-          onSearch={setSearchTerm}
-        />
-      )}
-
-      <div className="flex-grow overflow-auto">
-        {folders.length > 0 && (
-          <div className="flex pb-2 border-b border-white/20">
-            <PromptFolders
-              searchTerm={searchTerm}
-              prompts={filteredPrompts}
-              folders={folders}
-              onUpdateFolder={onUpdateFolder}
-              onDeleteFolder={onDeleteFolder}
-              // prompt props
-              onDeletePrompt={handleDeletePrompt}
-              onUpdatePrompt={handleUpdatePrompt}
-            />
-          </div>
-        )}
-
-        {prompts.length > 0 ? (
-          <div
-            className="pt-2"
-            onDrop={(e) => handleDrop(e)}
-            onDragOver={allowDrop}
-            onDragEnter={highlightDrop}
-            onDragLeave={removeHighlight}
-          >
-            <Prompts
-              prompts={filteredPrompts.filter((prompt) => !prompt.folderId)}
-              onUpdatePrompt={handleUpdatePrompt}
-              onDeletePrompt={handleDeletePrompt}
-            />
-          </div>
-        ) : (
-          <div className="mt-8 text-center text-white opacity-50 select-none">
-            <IconMistOff className="mx-auto mb-3" />
-            <span className="text-[14px] leading-normal">
-              {t('No prompts.')}
-            </span>
-          </div>
-        )}
-      </div>
-
-      <PromptbarSettings />
-    </div>
-  );
-};
+  // fallback
+  return null;
+}; 

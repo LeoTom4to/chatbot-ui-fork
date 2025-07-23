@@ -2,8 +2,8 @@ import { ShieldCheck, Menu, FilePlus, BookOpen, Share2, Pencil, FolderPlus, Arch
 import { useRef, useState } from "react";
 import { useCaseStore } from "@/store/useCaseStore";
 import type { Case } from '@/store/useCaseStore';
-import { cn } from "@/utils";
 import React from "react"; // Added missing import
+import { useTranslation } from 'next-i18next';
 
 function SidebarItem({ c, renameId, setRenameId, renameValue, setRenameValue, setShowDelete, showToast }: {
   c: Case;
@@ -68,12 +68,11 @@ function SidebarItem({ c, renameId, setRenameId, renameValue, setRenameValue, se
 
   return (
     <li
-      className={cn(
-        "group relative flex items-center rounded px-3 py-2 cursor-pointer transition-colors",
+      className={`${
         c.id === currentCaseId
           ? "bg-[#1d2b39] text-white font-medium"
           : "text-gray-300 hover:bg-[#2a3b4d] hover:text-white"
-      )}
+      } group relative flex items-center rounded px-3 py-2 cursor-pointer transition-colors`}
       onClick={() => setCurrentCaseId(c.id)}
     >
       {renameId === c.id ? (
@@ -119,6 +118,7 @@ function SidebarItem({ c, renameId, setRenameId, renameValue, setRenameValue, se
 }
 
 export function Sidebar() {
+  const { t } = useTranslation('sidebar');
   const cases = useCaseStore((s) => s.cases);
   const visibleCases = cases.filter((c: Case) => c.messages.length > 0);
   const setCurrentCaseId = useCaseStore((s) => s.setCurrentCaseId);
@@ -153,7 +153,7 @@ export function Sidebar() {
       }>
         <div className="font-bold text-lg flex items-center space-x-2">
           <ShieldCheck className="text-blue-500 w-5 h-5" />
-          <span>反诈系统</span>
+          <span>{t('Anti-fraud System', '反诈系统')}</span>
         </div>
         <div className="mt-3 space-y-2">
           <button
@@ -164,10 +164,10 @@ export function Sidebar() {
                 setCurrentCaseId(null);
               }
             }}
-          >＋ 新建案件</button>
+          >＋ {t('New folder', '新建案件')}</button>
         </div>
         <div className="mt-4 mb-2 px-3 text-xs text-gray-400 font-semibold tracking-widest select-none">
-          案件历史
+          {t('Case History', '案件历史')}
         </div>
       </div>
 
@@ -178,7 +178,7 @@ export function Sidebar() {
         onScroll={handleHistoryScroll}
       >
         <ul className="px-2 py-2 space-y-1 text-xs">
-          {visibleCases.length === 0 && <p className="text-sub px-3">暂无案件</p>}
+          {visibleCases.length === 0 && <p className="text-sub px-3">{t('No conversations.', '暂无案件')}</p>}
           {visibleCases.map((c: Case) => (
             <SidebarItem
               key={c.id}
@@ -203,16 +203,16 @@ export function Sidebar() {
       {showDelete && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
           <div className="bg-white rounded-xl p-8 shadow-2xl min-w-[320px] text-gray-900">
-            <div className="text-lg font-bold mb-2">Delete chat?</div>
-            <div className="mb-4">This will delete <b>{showDelete.title}</b>.</div>
+            <div className="text-lg font-bold mb-2">{t('Delete chat?', '删除案件?')}</div>
+            <div className="mb-4">{t('This will delete', '将删除')} <b>{showDelete.title}</b>。</div>
             <div className="flex gap-4 justify-end">
-              <button className="px-4 py-2 rounded border" onClick={()=>setShowDelete(null)}>Cancel</button>
-              <button className="px-4 py-2 rounded bg-red-600 text-white" onClick={()=>{
+              <button className="px-4 py-2 rounded border" onClick={()=>setShowDelete(null)}>{t('Cancel', '取消')}</button>
+              <button className="px-4 py-2 rounded bg-red-600 text-white" onClick={() => {
                 if (showDelete) {
                   useCaseStore.getState().deleteCase(showDelete.id);
                   setShowDelete(null);
                 }
-              }}>Delete</button>
+              }}>{t('Delete', '删除')}</button>
             </div>
           </div>
         </div>

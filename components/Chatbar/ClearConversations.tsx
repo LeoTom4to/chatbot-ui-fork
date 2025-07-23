@@ -22,7 +22,7 @@ export const ClearConversations: FC<Props> = ({ onClearConversations }) => {
       <IconTrash size={18} />
 
       <div className="ml-3 flex-1 text-left text-[12.5px] leading-3 text-white">
-        {t('Are you sure?')}
+        确定要清空所有对话吗？
       </div>
 
       <div className="flex w-[40px]">
@@ -47,7 +47,7 @@ export const ClearConversations: FC<Props> = ({ onClearConversations }) => {
     </div>
   ) : (
     <SidebarButton
-      text={t('Clear conversations')}
+      text="清空对话"
       icon={<IconTrash size={18} />}
       onClick={() => setIsConfirming(true)}
     />

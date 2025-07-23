@@ -32,12 +32,12 @@ export const QuickActions = () => {
   const endChat = async () => {
     if (!current || current.locked) return;
     patch({ locked: true });
-    const res = await fetch('/api/analyze?type=summary', {
+    const res = await fetch('/api/jiutian/chat?type=summary', {
       method: 'POST',
-      body: JSON.stringify({ history: current.messages })
+      body: JSON.stringify({ input: current.messages.map(m => m.content).join('\n') })
     });
-    const data = await res.json();
-    patch({ result: data });
+    const { fraud_judgment } = await res.json();
+    patch({ result: fraud_judgment });
   };
 
   return (

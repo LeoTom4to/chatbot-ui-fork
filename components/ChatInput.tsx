@@ -1,45 +1,61 @@
 import { useCaseStore } from '@/store/useCaseStore';
+import { useRiskAnalysisStore } from '@/store/useRiskAnalysisStore';
 import { useState } from 'react';
 
 export const ChatInput = () => {
   const current = useCaseStore((s) => s.cases.find((c) => c.id === s.currentId));
-  const patch = useCaseStore((s) => s.patchCurrent);
+  // const patch = useCaseStore((s) => s.patchCurrent); // 移除
   const [text, setText] = useState('');
-  const loading = false; // 可根据实际 loading 状态调整
-  const mode = current?.mode || 'single';
-  const disabled = !current || current.locked;
+  const { setAllResult, setLoading } = useRiskAnalysisStore();
+  const mode = (current as any)?.mode || 'single';
+  const disabled = !current || (current as any)?.locked;
 
   const handleSend = async () => {
     if (!text.trim() || !current) return;
-    patch({ messages: [...current.messages, { role: 'user', content: text }] });
-    if (current.mode === 'multi') {
-      const res = await fetch('/api/analyze', {
+    // 聊天流：主窗口显示自然语言
+    // patch({ messages: [...current.messages, { role: 'user', content: text }] });
+    current.messages.push({ role: 'user', content: text });
+    setLoading(true);
+    try {
+      // ① 聊天流
+      const chatRes = await fetch('/api/jiutian/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, mode: current.mode })
+        body: JSON.stringify({ input: text })
       });
-      const { advice } = await res.json();
-      patch({
-        messages: [
-          ...current.messages,
-          { role: 'user', content: text },
-          { role: 'assistant', content: advice },
-        ],
-      });
-    } else {
-      const res = await fetch('/api/analyze', {
+      const { output: assistantText } = await chatRes.json();
+      current.messages.push({ role: 'assistant', content: assistantText });
+
+      // ② 结构化判定流
+      const judgeRes = await fetch('/api/jiutian/structured-judgment', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, mode: current.mode })
+        body: JSON.stringify({ text })
       });
-      const data = await res.json();
-      patch({
-        messages: [...current.messages, { role: 'user', content: text }],
-        result: data,
-        locked: true,
-      });
+      const { fraud_judgment } = await judgeRes.json();
+      setAllResult({ fraud_judgment });
+
+      // ③ 深度分析流（仅诈骗时）
+      if (fraud_judgment?.is_scam) {
+        const analysisRes = await fetch('/api/jiutian/analysis-report', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            fraud_type: fraud_judgment.fraud_type,
+            risk_level: fraud_judgment.risk_level,
+          }),
+        });
+        const analysis = await analysisRes.json();
+        setAllResult({ ...analysis, fraud_judgment });
+      } else {
+        setAllResult({ fraud_judgment });
     }
+    } catch (e) {
+      // 可加错误提示
+    } finally {
+      setLoading(false);
     setText('');
+    }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {

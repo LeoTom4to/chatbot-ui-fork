@@ -31,18 +31,7 @@ export const Import: FC<Props> = ({ onImport }) => {
         }}
       />
 
-      <SidebarButton
-        text={t('import data')}
-        icon={<IconFileImport size={18} />}
-        onClick={() => {
-          const importFile = document.querySelector(
-            '#import-file',
-          ) as HTMLInputElement;
-          if (importFile) {
-            importFile.click();
-          }
-        }}
-      />
+      {/* 删除与 Import data 相关的按钮、文本和逻辑 */}
     </>
   );
 };
